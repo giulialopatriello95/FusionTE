@@ -1,0 +1,97 @@
+# =============================
+# Config variables
+# =============================
+GTF = "repeat.gtf"
+GENEGTF = "Homo_sapiens.GRCh38.112.gtf"
+GENOME = "Homo_sapiens.GRCh38.dna.toplevel.fa"
+
+# Directory where BAMs are stored
+BAMDIR = "/beegfs/scratch/ric.dellabona.casorati/ric.dellabona.casorati/ArboreG_2380_RNAseq/samples/RNAESOCA101T/runs/all/fastq/merge-by-read/trimmed/trimmomatic/mapped/STAR/merged"
+
+# List of sample IDs (basename of BAMs without .bam)
+SAMPLES = ["RNAESOCA101T"]
+
+
+rule all:
+    input:
+        expand("example_mode1/{sample}/ok", sample=SAMPLES)
+
+
+# =============================
+# BAM → FASTQ (paired-end)
+# =============================
+rule bam_to_fastq:
+    conda: "env.yaml"
+    input:
+        lambda wildcards: f"{BAMDIR}/{wildcards.sample}.bam"
+    output:
+        r1=temp("fastq/{sample}_R1.fastq.gz"),
+        r2=temp("fastq/{sample}_R2.fastq.gz")
+    shell:
+        """
+        samtools fastq -@ 8 \
+            -1 {output.r1} \
+            -2 {output.r2} \
+            -0 /dev/null -s /dev/null -n \
+            {input}
+        """
+
+
+# =============================
+# FASTQ trimming (paired-end)
+# =============================
+rule trimming:
+    conda: "env.yaml"
+    input:
+        r1="fastq/{sample}_R1.fastq.gz",
+        r2="fastq/{sample}_R2.fastq.gz"
+    output:
+        r1=temp("trimmed/{sample}_R1.fastq.gz"),
+        r2=temp("trimmed/{sample}_R2.fastq.gz")
+    shell:
+        """
+        fastp \
+            -i {input.r1} -I {input.r2} \
+            -o {output.r1} -O {output.r2} \
+            -w 8
+        """
+
+
+# =============================
+# ChimeraTE analysis
+# =============================
+rule chimeraTE:
+    input:
+        r1="trimmed/{sample}_R1.fastq.gz",
+        r2="trimmed/{sample}_R2.fastq.gz"
+    output:
+        "example_mode1/{sample}/ok"
+    threads: 4
+    params:
+        genome=GENOME,
+        te=GTF,
+        gene=GENEGTF
+    resources:
+        mem_mb= 64000
+    shell:
+        """
+        bash -c '
+        . $HOME/.bashrc
+        conda activate chimeraTE
+
+     
+        # Create sample-specific input.tsv for ChimeraTE
+        echo -e "{input.r1}\t{input.r2}\t{wildcards.sample}" > results/{wildcards.sample}/input.tsv
+
+        python3 /home/lopatriello.giulia/ChimeraTE/chimTE_mode1.py \
+            --genome {params.genome} \
+            --input results/{wildcards.sample}/input.tsv \
+            --project example_mode1 \
+            --te {params.te} \
+            --gene {params.gene} \
+            --strand rf-stranded \
+            --threads {threads}
+        touch {output}
+        conda deactivate
+        '
+        """
