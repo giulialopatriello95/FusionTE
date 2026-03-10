@@ -1,0 +1,81 @@
+import os
+
+configfile: "config.yaml"
+
+PRIMERS = config["primers"]
+REPEAT_GTF = config["repeat_gtf"]
+ISOFORM_GTF = config["isoform_gtf"]
+MERGED_GTF = config["merged_gtf"]
+DEDUP_GTF = config["deduplicated_gtf"]
+DEDUP_BY = config["dedup_by"]
+REFERENCE_FA = config["reference_fasta"]
+TRANSCRIPTOME_FA = config["merged_transcriptome"]
+DB_NAME = config["blast_db"]
+BLAST_OUTPUT = config["blast_output"]
+
+rule all:
+    input:
+        BLAST_OUTPUT,
+        TRANSCRIPTOME_FA
+
+rule deduplicate_gtf:
+    input:
+        gtf="transcriptome.gtf"
+    output:
+        DEDUP_GTF
+    params:
+        dedup_by=DEDUP_BY
+    shell:
+        "python dedup_gtf.py {input.gtf} {output} {params.dedup_by}"
+
+
+rule validate_gtf:
+    conda: "../other_test/env/gffread.yaml"
+
+    input:
+        gtf=DEDUP_GTF
+    output:
+        touch("validated_gtf.done")
+    shell:
+        "gffread -E {input.gtf} -g {REFERENCE_FA} -o /dev/null && touch {output}"
+
+
+
+rule generate_transcriptome_fasta:
+    conda: "../other_test/env/gffread.yaml"
+    input:
+        gtf=DEDUP_GTF,
+        ref=REFERENCE_FA
+    output:
+        TRANSCRIPTOME_FA
+    shell:
+        """
+        sed 's/chrchr/chr/g' -i {input.gtf}
+        
+        gffread {input.gtf} -F -g {input.ref} -w {output}
+        """
+
+rule make_blast_db:
+    conda: "blast.yaml"
+    input:
+        "merged_transcriptome.fa"
+    output:
+        DB_NAME + ".nin"
+    shell:
+        "makeblastdb -in {input} -dbtype nucl -out {DB_NAME}"
+
+rule blast_primers:
+    conda: "blast.yaml"
+    input:
+        primers=PRIMERS,
+        db_index=DB_NAME + ".nin"
+    output:
+        BLAST_OUTPUT
+    threads:10
+    shell:
+        """
+        blastn -query {input.primers} -db {DB_NAME} \
+            -outfmt '6 qseqid sseqid pident length qlen slen qstart qend sstart send mismatch gapopen gaps strand' \
+            -out {output} -num_alignments 100 -num_threads {threads} -task blastn-short -word_size 7 -evalue 1000 
+        """
+
